@@ -5,7 +5,7 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "cf-gemini-proxy",
-	"main": "src/index.ts",
+	"main": "src/worker.ts",
 	"compatibility_date": "2025-08-29",
 	"compatibility_flags": [
 		"global_fetch_strictly_public"
@@ -16,7 +16,13 @@
 	},
 	"observability": {
 		"enabled": true
-	}
+	},
+	"kv_namespaces": [
+		{
+			"binding": "KEYPOOL",
+			"id": "bbb402d1f0e94506a12c389afb21b140"
+		}
+	]
 	/**
 	 * Smart Placement
 	 * Docs: https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
