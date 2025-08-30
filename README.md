@@ -1,49 +1,57 @@
-⸻
-
-
 # cf-gemini-proxy
 
 基于 **Cloudflare Workers** 的 Gemini API 无服务器中转层。  
-支持 **多 API Key 池**、**KV 热更新**、**自动熔断 & 冷却**、**流式透传** 和 **CORS 控制**。  
-用于保护密钥、防止前端暴露，同时实现负载分摊与高可用。
+支持 **多 API Key 池 (KV 热更新)**、**代理口令 (PROXY_KEY) 鉴权**、**自动熔断 & 冷却**、**流式透传** 和 **CORS 控制**。  
+用于保护真实 Gemini Key、防止前端暴露，同时实现负载分摊与高可用。
 
 ---
 
 ## ✨ 功能特性
 
 - **无服务器**：Cloudflare Workers 部署，按请求触发，无需维护服务器。
+- **安全升级 (必选)**：加入 `PROXY_KEY` 作为代理口令，只有携带正确口令的客户端才能调用。
 - **多 Key 支持**：
-  - Secret 模式：在 `GEMINI_KEYS` 中配置逗号分隔的多 Key。
-  - KV 模式：使用 `KEYPOOL` 命名空间，热更新无需重新部署。
+  - Secret 模式：`GEMINI_KEYS` 中配置逗号分隔的多个 Key。
+  - KV 模式：`KEYPOOL` 命名空间，支持热更新，无需重新部署。
 - **自动熔断**：
   - 429 → Key 冷却 30s。
   - 401/403 → 标记失效。
 - **流式与非流式**：支持 `:generateContent` 和 `:streamGenerateContent`。
-- **CORS 支持**：默认允许 `*`，建议上线改为白名单。
+- **CORS 支持**：默认 `*`，建议上线改为白名单。
 - **健康检查**：`/healthz` 查看池子大小与可用 Key 数。
 
 ---
 
 ## 🚀 快速使用
 
-### 部署
+### 1. 部署
 
 ```bash
-# 安装依赖
 npm install -g wrangler
-
-# 初始化 Worker 项目
 wrangler init cf-gemini-proxy
 cd cf-gemini-proxy
 
-# 设置 KV 命名空间
+# 创建 KV 命名空间
 npx wrangler kv namespace create KEYPOOL
-# 将生成的 id 写入 wrangler.jsonc
 
-# 部署
-npx wrangler deploy
+在 wrangler.jsonc 自动加入：
 
-写入 Key 池 (KV 热更新)
+{
+  "kv_namespaces": [
+    { "binding": "KEYPOOL", "id": "<你的命名空间ID>" }
+  ]
+}
+
+2. 配置 Secrets
+
+# 设置代理口令（必须）
+npx wrangler secret put PROXY_KEY
+# 例如输入: Proxy_key_pass_123abc#
+
+# 可选：设置兜底 Gemini Key（逗号分隔）
+npx wrangler secret put GEMINI_KEYS
+
+3. 写入 Key 池 (KV 热更新)
 
 cat > pool.json <<'JSON'
 {
@@ -56,69 +64,61 @@ JSON
 
 npx wrangler kv key put pool --binding=KEYPOOL --remote --path=pool.json
 
-验证
+4. 部署
 
-# 查看 Key 池
-npx wrangler kv key get pool --binding=KEYPOOL --remote
-
-# 健康检查
-curl https://cf-gemini-proxy.<subdomain>.workers.dev/healthz
-# => {"ok":true,"size":2,"usable":2,...}
+npx wrangler deploy
 
 
 ⸻
 
-📡 调用示例
+🔐 调用方式（必须带 PROXY_KEY）
 
-非流式
+curl 示例
+	•	未带口令 → 401
 
-curl -X POST \
-"https://cf-gemini-proxy.<subdomain>.workers.dev/gemini/v1beta/models/gemini-2.5-flash:generateContent" \
--H "Content-Type: application/json" \
--d '{
-  "contents":[{"role":"user","parts":[{"text":"用一句话解释 Serverless"}]}]
-}'
+curl -X POST "https://<你的域名>/v1beta/models/gemini-2.5-flash:generateContent" \
+  -H "Content-Type: application/json" \
+  -d '{"contents":[{"parts":[{"text":"测试无口令"}]}]}'
+# {"error":"Unauthorized"}
 
-流式
+	•	带口令 → 200
 
-curl -N -X POST \
-"https://cf-gemini-proxy.<subdomain>.workers.dev/gemini/v1beta/models/gemini-2.5-flash:streamGenerateContent" \
--H "Content-Type: application/json" \
--d '{"contents":[{"parts":[{"text":"逐条输出三点优势"}]}]}'
+curl -X POST "https://<你的域名>/v1beta/models/gemini-2.5-flash:generateContent" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer Proxy_key_pass_123abc#" \
+  -d '{"contents":[{"parts":[{"text":"测试有口令"}]}]}'
 
-前端调用
+Cherry Studio / 其他客户端
 
-const r = await fetch('/gemini/v1beta/models/gemini-2.5-flash:generateContent', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    contents: [{ role: 'user', parts: [{ text: '你好' }]}]
-  })
-});
-const data = await r.json();
+在 Gemini 提供商配置中：
+	•	API 地址：https://<你的 workers 域名>
+	•	API 密钥：填 PROXY_KEY（例如 Proxy_key_pass_123abc#）
+	•	模型：选择 gemini-2.5-flash
+
+Cherry 默认使用 x-goog-api-key 头，Worker 已兼容，直接可用。
+
+⸻
+
+📡 健康检查
+
+curl https://<你的域名>/healthz
+# => {"ok":true,"size":2,"usable":2,"ts":...}
 
 
 ⸻
 
-🔧 KV 管理速查表
-
-# 查看远程 Key 池
-npx wrangler kv key get pool --binding=KEYPOOL --remote
-
-# 更新 Key 池
-npx wrangler kv key put pool --binding=KEYPOOL --remote --path=pool.json
-
-# 删除 Key 池
-npx wrangler kv key delete pool --binding=KEYPOOL --remote
-
+📊 安全优势
+	•	避免匿名滥用：没有口令直接拒绝调用。
+	•	口令可控：可随时更换，立即生效。
+	•	兼容多客户端：支持 Authorization、x-goog-api-key、x-api-key 三种传法。
+	•	不暴露上游 Gemini Key：真实 Key 永远只存储在 KV/Secret，不下发给客户端。
 
 ⸻
 
 ⚠️ 注意事项
-	•	密钥不要放前端，统一通过 Worker 代理。
-	•	CORS 默认 *，上线时改为你的前端域名。
-	•	建议结合 Cloudflare AI Gateway 做限流、可观测。
-	•	Key 池 JSON 必须合法（结尾 ]} 不能漏）。
+	•	请修改 CORS_ALLOW 为你的前端域名，避免跨站调用。
+	•	PROXY_KEY 建议设置为高强度随机字符串。
+	•	结合 Cloudflare Ruleset/AI Gateway，可进一步加上限流、可观测。
 
 ⸻
 
@@ -126,26 +126,10 @@ npx wrangler kv key delete pool --binding=KEYPOOL --remote
 
 cf-gemini-proxy/
 ├── src/
-│   └── worker.ts        # Worker 核心逻辑（多 Key 支持）
+│   └── worker.ts        # Worker 核心逻辑（含 PROXY_KEY 鉴权）
 ├── public/              # 静态资源目录
 ├── wrangler.jsonc       # 配置文件
-└── pool.json            # KV Key 池示例（本地管理用）
-
-
-⸻
-
-🩺 健康检查接口
-
-curl https://cf-gemini-proxy.<subdomain>.workers.dev/healthz
-# => {"ok":true,"size":2,"usable":2,"ts":...}
-
-	•	ok：是否有可用 Key
-	•	size：Key 总数
-	•	usable：当前可用 Key 数
-	•	ts：时间戳
-
-⸻
-
+└── pool.json            # KV Key 池示例
 
 ---
 
